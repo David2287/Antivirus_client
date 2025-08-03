@@ -2,6 +2,9 @@
 // Created by WhySkyDie on 21.07.2025.
 //
 
+#ifndef FILE_UTILS_H
+#define FILE_UTILS_H
+
 #pragma once
 
 #include <string>
@@ -344,6 +347,80 @@ namespace FileUtils {
                                  const std::chrono::hours& max_age);
     };
 
+    // Утилита для работы с файлами
+    class FileUtils {
+    public:
+    // Основные методы с исправленными сигнатурами
+    static std::vector<std::string> list_files_recursive(const std::filesystem::path& path);
+    static std::string get_filename(const std::filesystem::path& file_path);
+    static bool file_exists(const std::filesystem::path& path);
+
+    // Дополнительные утилиты для работы с файлами
+    static std::vector<std::string> list_files_recursive(const std::filesystem::path& path,
+                                                        const std::vector<std::string>& extensions);
+    static std::vector<std::string> list_files_non_recursive(const std::filesystem::path& path);
+    static std::vector<std::string> list_directories(const std::filesystem::path& path, bool recursive = false);
+
+    // Информация о файлах
+    static std::string get_file_extension(const std::filesystem::path& file_path);
+    static std::string get_filename_without_extension(const std::filesystem::path& file_path);
+    static std::string get_parent_directory(const std::filesystem::path& file_path);
+    static std::uintmax_t get_file_size(const std::filesystem::path& file_path);
+    static std::filesystem::file_time_type get_last_write_time(const std::filesystem::path& file_path);
+
+    // Операции с файлами
+    static bool copy_file_safe(const std::filesystem::path& source, const std::filesystem::path& destination);
+    static bool move_file_safe(const std::filesystem::path& source, const std::filesystem::path& destination);
+    static bool delete_file_safe(const std::filesystem::path& file_path);
+    static bool create_directory_safe(const std::filesystem::path& dir_path);
+    static bool create_directories_safe(const std::filesystem::path& dir_path);
+
+    // Проверки
+    static bool is_directory(const std::filesystem::path& path);
+    static bool is_regular_file(const std::filesystem::path& path);
+    static bool is_empty_directory(const std::filesystem::path& path);
+    static bool has_extension(const std::filesystem::path& file_path, const std::string& extension);
+    static bool is_hidden_file(const std::filesystem::path& file_path);
+
+    // Поиск и фильтрация
+    static std::vector<std::string> find_files_by_pattern(const std::filesystem::path& root_path,
+                                                         const std::string& pattern,
+                                                         bool recursive = true);
+    static std::vector<std::string> find_files_by_size(const std::filesystem::path& root_path,
+                                                       std::uintmax_t min_size,
+                                                       std::uintmax_t max_size,
+                                                       bool recursive = true);
+    static std::vector<std::string> filter_files_by_extension(const std::vector<std::string>& files,
+                                                             const std::vector<std::string>& extensions);
+
+    // Утилиты путей
+    static std::string normalize_path(const std::filesystem::path& path);
+    static std::string get_absolute_path(const std::filesystem::path& path);
+    static std::string get_relative_path(const std::filesystem::path& path,
+                                        const std::filesystem::path& base);
+    static bool is_subdirectory_of(const std::filesystem::path& child,
+                                  const std::filesystem::path& parent);
+
+    // Подсчет и статистика
+    static size_t count_files_recursive(const std::filesystem::path& path);
+    static size_t count_directories_recursive(const std::filesystem::path& path);
+    static std::uintmax_t calculate_directory_size(const std::filesystem::path& path);
+
+    // Callback-based обход
+    static void walk_directory_tree(const std::filesystem::path& root,
+                                   std::function<void(const std::filesystem::path&)> file_callback,
+                                   std::function<void(const std::filesystem::path&)> dir_callback = nullptr,
+                                   bool recursive = true);
+
+    private:
+        // Вспомогательные методы
+        static bool matches_pattern(const std::string& filename, const std::string& pattern);
+        static void list_files_recursive_impl(const std::filesystem::path& path,
+                                             std::vector<std::string>& result,
+                                             const std::vector<std::string>* extensions = nullptr);
+    };
+
+
     // Детектор типов файлов
     class FileTypeDetector {
     public:
@@ -460,3 +537,5 @@ namespace FileUtils {
         std::filesystem::path GetUniqueFilePath(const std::filesystem::path& desired_path);
     }
 }
+
+#endif // FILE_UTILS_H

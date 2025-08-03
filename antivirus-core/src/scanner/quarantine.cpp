@@ -29,6 +29,8 @@
     #include <sys/utsname.h>
 #endif
 
+using json = nlohmann::json;
+
 namespace QuarantineEngine {
 
     // Реализация QuarantineManager::Impl
@@ -867,6 +869,325 @@ namespace QuarantineEngine {
 
         throw std::invalid_argument("Unsupported hash algorithm");
     }
+
+    QuarantineItem::QuarantineItem(const std::string& id, const std::string& orig_path,
+                               const std::string& quar_path, const std::string& hash,
+                               size_t size, const std::string& quarantine_reason)
+    : file_id(id), original_path(orig_path), quarantine_path(quar_path),
+      quarantine_time(std::chrono::system_clock::now()), file_hash(hash),
+      file_size(size), reason(quarantine_reason) {}
+
+QuarantineManager::QuarantineManager(const std::filesystem::path& quarantine_directory)
+    : quarantine_dir(quarantine_directory), metadata_file(quarantine_directory / "metadata.json") {
+    initialize();
+}
+
+QuarantineManager::~QuarantineManager() {
+    save_metadata();
+}
+
+bool QuarantineManager::initialize() {
+    try {
+        // Создаем директорию карантина если не существует
+        if (!std::filesystem::exists(quarantine_dir)) {
+            std::filesystem::create_directories(quarantine_dir);
+        }
+
+        // Загружаем метаданные
+        return load_metadata();
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка инициализации карантина: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::string QuarantineManager::generate_file_id() const {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 15);
+
+    std::stringstream ss;
+    ss << std::hex;
+    for (int i = 0; i < 32; ++i) {
+        ss << dis(gen);
+    }
+    return ss.str();
+}
+
+std::string QuarantineManager::calculate_file_hash(const std::filesystem::path& path) const {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return "";
+    }
+
+    MD5_CTX md5_ctx;
+    MD5_Init(&md5_ctx);
+
+    char buffer[8192];
+    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
+        MD5_Update(&md5_ctx, buffer, file.gcount());
+    }
+
+    unsigned char hash[MD5_DIGEST_LENGTH];
+    MD5_Final(hash, &md5_ctx);
+
+    std::stringstream ss;
+    for (int i = 0; i < MD5_DIGEST_LENGTH; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+    }
+
+    return ss.str();
+}
+
+bool QuarantineManager::quarantine_file(const std::filesystem::path& path) {
+    try {
+        if (!std::filesystem::exists(path)) {
+            std::cerr << "Файл не существует: " << path << std::endl;
+            return false;
+        }
+
+        if (!std::filesystem::is_regular_file(path)) {
+            std::cerr << "Не является обычным файлом: " << path << std::endl;
+            return false;
+        }
+
+        // Генерируем уникальный ID
+        std::string file_id = generate_file_id();
+
+        // Вычисляем хэш файла
+        std::string file_hash = calculate_file_hash(path);
+        if (file_hash.empty()) {
+            std::cerr << "Не удалось вычислить хэш файла: " << path << std::endl;
+            return false;
+        }
+
+        // Получаем размер файла
+        size_t file_size = std::filesystem::file_size(path);
+
+        // Создаем путь в карантине
+        std::filesystem::path quarantine_path = quarantine_dir / (file_id + ".quar");
+
+        // Перемещаем файл в карантин
+        std::filesystem::rename(path, quarantine_path);
+
+        // Создаем запись в метаданных
+        QuarantineItem item(file_id, path.string(), quarantine_path.string(),
+                           file_hash, file_size, current_reason);
+        quarantine_items[file_id] = item;
+
+        // Сохраняем метаданные
+        save_metadata();
+
+        std::cout << "Файл " << path << " помещен в карантин с ID: " << file_id << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка при помещении файла в карантин: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool QuarantineManager::restore_file(const std::string& file_id) {
+    try {
+        auto it = quarantine_items.find(file_id);
+        if (it == quarantine_items.end()) {
+            std::cerr << "Файл с ID " << file_id << " не найден в карантине" << std::endl;
+            return false;
+        }
+
+        const QuarantineItem& item = it->second;
+
+        if (!std::filesystem::exists(item.quarantine_path)) {
+            std::cerr << "Файл карантина не существует: " << item.quarantine_path << std::endl;
+            quarantine_items.erase(it);
+            save_metadata();
+            return false;
+        }
+
+        // Создаем директории для восстановления если необходимо
+        std::filesystem::path original_dir = std::filesystem::path(item.original_path).parent_path();
+        if (!std::filesystem::exists(original_dir)) {
+            std::filesystem::create_directories(original_dir);
+        }
+
+        // Восстанавливаем файл
+        std::filesystem::rename(item.quarantine_path, item.original_path);
+
+        // Удаляем из карантина
+        quarantine_items.erase(it);
+        save_metadata();
+
+        std::cout << "Файл " << file_id << " восстановлен в " << item.original_path << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка при восстановлении файла: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool QuarantineManager::delete_file(const std::string& file_id) {
+    try {
+        auto it = quarantine_items.find(file_id);
+        if (it == quarantine_items.end()) {
+            std::cerr << "Файл с ID " << file_id << " не найден в карантине" << std::endl;
+            return false;
+        }
+
+        const QuarantineItem& item = it->second;
+
+        // Удаляем файл из файловой системы
+        if (std::filesystem::exists(item.quarantine_path)) {
+            std::filesystem::remove(item.quarantine_path);
+        }
+
+        // Удаляем из метаданных
+        quarantine_items.erase(it);
+        save_metadata();
+
+        std::cout << "Файл " << file_id << " окончательно удален из карантина" << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка при удалении файла: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::vector<QuarantineItem> QuarantineManager::list_quarantine() const {
+    std::vector<QuarantineItem> items;
+    items.reserve(quarantine_items.size());
+
+    for (const auto& pair : quarantine_items) {
+        items.push_back(pair.second);
+    }
+
+    // Сортируем по времени помещения в карантин (новые сначала)
+    std::sort(items.begin(), items.end(),
+              [](const QuarantineItem& a, const QuarantineItem& b) {
+                  return a.quarantine_time > b.quarantine_time;
+              });
+
+    return items;
+}
+
+bool QuarantineManager::load_metadata() {
+    try {
+        if (!std::filesystem::exists(metadata_file)) {
+            return true; // Файл не существует - это нормально для первого запуска
+        }
+
+        std::ifstream file(metadata_file);
+        if (!file.is_open()) {
+            std::cerr << "Не удалось открыть файл метаданных" << std::endl;
+            return false;
+        }
+
+        json j;
+        file >> j;
+
+        quarantine_items.clear();
+
+        for (const auto& item_json : j["items"]) {
+            QuarantineItem item;
+            item.file_id = item_json["file_id"];
+            item.original_path = item_json["original_path"];
+            item.quarantine_path = item_json["quarantine_path"];
+            item.file_hash = item_json["file_hash"];
+            item.file_size = item_json["file_size"];
+            item.reason = item_json["reason"];
+
+            // Парсим время
+            auto time_str = item_json["quarantine_time"].get<std::string>();
+            std::istringstream ss(time_str);
+            std::tm tm = {};
+            ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+            item.quarantine_time = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+
+            quarantine_items[item.file_id] = item;
+        }
+
+        std::cout << "Загружено " << quarantine_items.size() << " элементов карантина" << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка загрузки метаданных: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool QuarantineManager::save_metadata() {
+    try {
+        json j;
+        j["items"] = json::array();
+
+        for (const auto& pair : quarantine_items) {
+            const QuarantineItem& item = pair.second;
+
+            auto time_t = std::chrono::system_clock::to_time_t(item.quarantine_time);
+            std::stringstream time_ss;
+            time_ss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+
+            json item_json = {
+                {"file_id", item.file_id},
+                {"original_path", item.original_path},
+                {"quarantine_path", item.quarantine_path},
+                {"quarantine_time", time_ss.str()},
+                {"file_hash", item.file_hash},
+                {"file_size", item.file_size},
+                {"reason", item.reason}
+            };
+
+            j["items"].push_back(item_json);
+        }
+
+        std::ofstream file(metadata_file);
+        if (!file.is_open()) {
+            std::cerr << "Не удалось создать файл метаданных" << std::endl;
+            return false;
+        }
+
+        file << j.dump(4);
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка сохранения метаданных: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void QuarantineManager::set_quarantine_reason(const std::string& reason) {
+    current_reason = reason;
+}
+
+size_t QuarantineManager::get_quarantine_count() const {
+    return quarantine_items.size();
+}
+
+bool QuarantineManager::cleanup_quarantine(std::chrono::hours older_than) {
+    try {
+        auto cutoff_time = std::chrono::system_clock::now() - older_than;
+        std::vector<std::string> to_delete;
+
+        for (const auto& pair : quarantine_items) {
+            if (pair.second.quarantine_time < cutoff_time) {
+                to_delete.push_back(pair.first);
+            }
+        }
+
+        for (const std::string& file_id : to_delete) {
+            delete_file(file_id);
+        }
+
+        std::cout << "Очищено " << to_delete.size() << " старых файлов из карантина" << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка очистки карантина: " << e.what() << std::endl;
+        return false;
+    }
+}
 
     // CompressionEngine
     CompressionEngine::CompressionEngine() : pImpl(std::make_unique<Impl>()) {}

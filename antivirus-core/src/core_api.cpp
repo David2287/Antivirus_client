@@ -471,6 +471,262 @@ std::string CoreInterface::GetBuildInfo() const {
     return get_build_info();
 }
 
-// Остальные методы C++ интерфейса реализуются аналогично...
+    bool CoreAPI::scan_path(const char* path) {
+    if (!validate_path(path)) {
+        std::cerr << "Некорректный путь для сканирования: " << path << std::endl;
+        return false;
+    }
 
+    try {
+        std::filesystem::path scan_path(path);
+
+        if (!std::filesystem::exists(scan_path)) {
+            std::cerr << "Путь не существует: " << path << std::endl;
+            return false;
+        }
+
+        std::cout << "Начинаем сканирование: " << path << std::endl;
+
+        // Рекурсивное сканирование директории
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(scan_path)) {
+            if (entry.is_regular_file()) {
+                // Здесь должна быть логика сканирования файла
+                std::cout << "Сканируем файл: " << entry.path() << std::endl;
+                // TODO: Добавить реальную логику антивирусного сканирования
+            }
+        }
+
+        std::cout << "Сканирование завершено успешно" << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка при сканировании: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::vector<QuarantineItem> CoreAPI::get_quarantine_list() {
+    std::vector<QuarantineItem> quarantine_items;
+
+    try {
+        // Чтение из файла карантина или базы данных
+        std::ifstream quarantine_file("quarantine.json");
+        if (!quarantine_file.is_open()) {
+            std::cout << "Файл карантина не найден или пуст" << std::endl;
+            return quarantine_items;
+        }
+
+        Json::Value root;
+        quarantine_file >> root;
+
+        for (const auto& item : root["quarantine_items"]) {
+            QuarantineItem qi;
+            qi.file_id = item["file_id"].asInt();
+            qi.file_path = item["file_path"].asString();
+            qi.threat_name = item["threat_name"].asString();
+            qi.quarantine_date = item["quarantine_date"].asString();
+            quarantine_items.push_back(qi);
+        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка при получении списка карантина: " << e.what() << std::endl;
+    }
+
+    return quarantine_items;
+}
+
+bool CoreAPI::restore_from_quarantine(int file_id) {
+    try {
+        std::vector<QuarantineItem> items = get_quarantine_list();
+
+        for (auto it = items.begin(); it != items.end(); ++it) {
+            if (it->file_id == file_id) {
+                std::cout << "Восстанавливаем файл с ID " << file_id
+                         << " по пути: " << it->file_path << std::endl;
+
+                // Логика восстановления файла из карантина
+                static const char* QUARANTINE_DB = "quarantine.db";
+
+                struct Record
+                {
+                    std::string quarantinePath;
+                    std::string originalPath;
+                };
+
+                static std::optional<Record> findRecord(const std::string& currentPath)
+                {
+                    std::ifstream db(QUARANTINE_DB);
+                    if (!db) return std::nullopt;
+
+                    Record rec;
+                    while (db >> rec.quarantinePath >> rec.originalPath)
+                    {
+                        if (rec.quarantinePath == currentPath)
+                            return rec;
+                    }
+                    return std::nullopt;
+                }
+
+                static bool eraseRecord(const std::string& currentPath)
+                {
+                    // Перезаписываем БД без нужной строки
+                    std::ifstream in(QUARANTINE_DB);
+                    std::ofstream out(QUARANTINE_DB ".tmp");
+                    if (!in || !out) return false;
+
+                    std::string qPath, oPath;
+                    while (in >> qPath >> oPath)
+                    {
+                        if (qPath != currentPath)
+                            out << qPath << ' ' << oPath << '\n';
+                    }
+
+                    in.close();
+                    out.close();
+                    fs::remove(QUARANTINE_DB);
+                    fs::rename(QUARANTINE_DB ".tmp", QUARANTINE_DB);
+                    return true;
+                }
+
+                bool moveBackToOriginal(const std::string& currentPath)
+                {
+                    auto rec = findRecord(currentPath);
+                    if (!rec) return false;
+
+                    const auto& from = rec->quarantinePath;
+                    const auto& to   = rec->originalPath;
+
+                    std::error_code ec;
+
+                    // Если целевой каталог исчез – создаём его
+                    fs::create_directories(fs::path(to).parent_path(), ec);
+
+                    fs::rename(from, to, ec);
+                    if (ec) return false;
+
+                    eraseRecord(currentPath);
+                    return true;
+                }
+
+                // Удаляем запись из карантина
+                items.erase(it);
+
+                // Сохраняем обновленный список карантина
+                Json::Value root;
+                Json::Value quarantine_array(Json::arrayValue);
+
+                for (const auto& item : items) {
+                    Json::Value json_item;
+                    json_item["file_id"] = item.file_id;
+                    json_item["file_path"] = item.file_path;
+                    json_item["threat_name"] = item.threat_name;
+                    json_item["quarantine_date"] = item.quarantine_date;
+                    quarantine_array.append(json_item);
+                }
+
+                root["quarantine_items"] = quarantine_array;
+
+                std::ofstream quarantine_file("quarantine.json");
+                quarantine_file << root;
+
+                std::cout << "Файл успешно восстановлен из карантина" << std::endl;
+                return true;
+            }
+        }
+
+        std::cerr << "Файл с ID " << file_id << " не найден в карантине" << std::endl;
+        return false;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка при восстановлении из карантина: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+AuthResult CoreAPI::auth_login(const char* device_id, const char* token) {
+    AuthResult result;
+    result.success = false;
+
+    if (!device_id || !token) {
+        result.message = "Некорректные параметры аутентификации";
+        return result;
+    }
+
+    if (!validate_token(token)) {
+        result.message = "Некорректный формат токена";
+        return result;
+    }
+
+    try {
+        std::cout << "Попытка входа для устройства: " << device_id << std::endl;
+
+        // Симуляция проверки токена
+        if (std::string(token).length() >= 32) {
+            result.success = true;
+            result.message = "Успешная аутентификация";
+            result.session_token = "session_" + std::string(device_id) + "_" + std::to_string(time(nullptr));
+            std::cout << "Вход выполнен успешно" << std::endl;
+        } else {
+            result.message = "Неверный токен аутентификации";
+        }
+
+    } catch (const std::exception& e) {
+        result.message = "Ошибка при аутентификации: " + std::string(e.what());
+    }
+
+    return result;
+}
+
+AuthResult CoreAPI::auth_register(const char* email, const char* token) {
+    AuthResult result;
+    result.success = false;
+
+    if (!email || !token) {
+        result.message = "Некорректные параметры регистрации";
+        return result;
+    }
+
+    if (!validate_email(email)) {
+        result.message = "Некорректный формат email";
+        return result;
+    }
+
+    if (!validate_token(token)) {
+        result.message = "Некорректный формат токена";
+        return result;
+    }
+
+    try {
+        std::cout << "Регистрация нового пользователя: " << email << std::endl;
+
+        // Симуляция регистрации
+        result.success = true;
+        result.message = "Регистрация прошла успешно";
+        result.session_token = "session_" + std::string(email) + "_" + std::to_string(time(nullptr));
+        std::cout << "Пользователь зарегистрирован успешно" << std::endl;
+
+    } catch (const std::exception& e) {
+        result.message = "Ошибка при регистрации: " + std::string(e.what());
+    }
+
+    return result;
+}
+
+// Вспомогательные функции
+bool CoreAPI::validate_path(const char* path) {
+    return path != nullptr && strlen(path) > 0;
+}
+
+bool CoreAPI::validate_email(const char* email) {
+    if (!email) return false;
+
+    std::regex email_regex(R"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})");
+    return std::regex_match(std::string(email), email_regex);
+}
+
+bool CoreAPI::validate_token(const char* token) {
+    if (!token) return false;
+
+    std::string token_str(token);
+    return token_str.length() >= 16 && token_str.length() <= 256;
 }

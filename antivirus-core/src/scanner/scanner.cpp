@@ -22,6 +22,13 @@
     #include <magic.h>
 #endif
 
+struct ScanResult {
+    std::string file_path;
+    bool is_infected;
+};
+
+
+
 namespace FileScanner {
 
     // Реализация DirectoryScanner::Impl
@@ -551,6 +558,78 @@ namespace FileScanner {
 
         scan_thread.detach();
         return true;
+    }
+
+    std::string hash_file(const std::string& path, const std::string& algorithm) {
+        // MD5 или SHA256
+        if (algorithm == "MD5") {
+            unsigned char digest[MD5_DIGEST_LENGTH];
+            char buf[4096];
+            MD5_CTX ctx;
+            MD5_Init(&ctx);
+
+            std::ifstream file(path, std::ifstream::binary);
+            if (!file) throw std::runtime_error("Cannot open file");
+
+            while (file.read(buf, sizeof(buf)))
+                MD5_Update(&ctx, buf, file.gcount());
+
+            MD5_Final(digest, &ctx);
+            char mdString[33];
+            for (int i = 0; i < MD5_DIGEST_LENGTH; ++i)
+                sprintf(&mdString[i * 2], "%02x", (unsigned int)digest[i]);
+
+            return std::string(mdString);
+        } else if (algorithm == "SHA256") {
+            unsigned char hash[SHA256_DIGEST_LENGTH];
+            SHA256_CTX sha256;
+            SHA256_Init(&sha256);
+
+            std::ifstream file(path, std::ifstream::binary);
+            if (!file) throw std::runtime_error("Cannot open file");
+
+            char buf[4096];
+            while (file.read(buf, sizeof(buf)))
+                SHA256_Update(&sha256, buf, file.gcount());
+
+            SHA256_Final(hash, &sha256);
+            char out[65];
+            for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+                sprintf(&out[i * 2], "%02x", hash[i]);
+            return std::string(out);
+        } else {
+            throw std::invalid_argument("Unsupported hash algorithm");
+        }
+    }
+
+    bool is_file_infected(const std::string& file_path) {
+        std::string file_hash = hash_file(file_path, "MD5");
+
+        //TODO: Подключить signatures.cpp для проверки
+        static const std::vector<std::string> known_hashes = {
+            "known_infected_hash"
+        };
+
+        return std::find(known_hashes.begin(), known_hashes.end(), file_hash) != known_hashes.end();
+    }
+
+    std::vector<ScanResult> scan_directory(const std::string& path) {
+        std::vector<ScanResult> results;
+
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(path)) {
+            if (entry.is_regular_file()) {
+                const std::string file_path = entry.path().string();
+                try {
+                    results.push_back({
+                        file_path,
+                        is_file_infected(file_path)
+                    });
+                } catch (...) {
+                    continue; // ошибки пропускаем
+                }
+            }
+        }
+        return results;
     }
 
     void DirectoryScanner::StopScan() {

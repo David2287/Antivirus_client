@@ -2,6 +2,9 @@
 // Created by WhySkyDie on 21.07.2025.
 //
 
+#ifndef AUTH_H
+#define AUTH_H
+
 #pragma once
 
 #include <string>
@@ -118,10 +121,86 @@ namespace ClientAuth {
         }
     };
 
+    struct AuthToken {
+        std::string token;
+        std::chrono::system_clock::time_point expiry_time;
+        std::string device_id;
+        std::string email;
+        bool is_valid;
+
+        AuthToken() : is_valid(false) {}
+        AuthToken(const std::string& tk, const std::chrono::system_clock::time_point& expiry,
+                  const std::string& dev_id, const std::string& user_email);
+
+        bool is_expired() const;
+    };
+
+    struct DeviceInfo {
+        std::string device_id;
+        std::string email;
+        std::chrono::system_clock::time_point registration_time;
+        std::chrono::system_clock::time_point last_login_time;
+        bool is_active;
+
+        DeviceInfo() : is_active(false) {}
+        DeviceInfo(const std::string& dev_id, const std::string& user_email);
+    };
+
     // Callback типы
     using AuthStatusCallback = std::function<void(AuthStatus status, const std::string& message)>;
     using TokenRefreshCallback = std::function<void(const AuthToken& new_token)>;
     using ConnectionErrorCallback = std::function<void(const std::string& error_message)>;
+
+    class AuthManager {
+    private:
+        std::filesystem::path auth_state_file;
+        std::string current_device_id;
+        AuthToken current_token;
+        std::unordered_map<std::string, DeviceInfo> registered_devices;
+        std::mutex auth_mutex;
+
+        // Настройки
+        std::chrono::hours token_validity_period;
+        size_t max_devices_per_email;
+
+        // Вспомогательные методы
+        std::string generate_device_id() const;
+        std::string hash_token(const std::string& token) const;
+        bool validate_email(const std::string& email) const;
+        bool validate_token_format(const std::string& token) const;
+        std::string encrypt_data(const std::string& data) const;
+        std::string decrypt_data(const std::string& encrypted_data) const;
+
+    public:
+        explicit AuthManager(const std::filesystem::path& state_file = "./auth_state.dat",
+                            std::chrono::hours token_validity = std::chrono::hours(24),
+                            size_t max_devices = 5);
+        ~AuthManager();
+
+        // Основные методы с исправленными сигнатурами
+        bool login(const std::string& device_id, const std::string& token);
+        bool register_device(const std::string& email, const std::string& token);
+        bool is_authenticated() const;
+        void save_auth_state();
+        void load_auth_state();
+
+        // Дополнительные методы
+        bool logout();
+        bool revoke_device(const std::string& device_id);
+        bool refresh_token(const std::string& new_token);
+        std::vector<DeviceInfo> get_registered_devices(const std::string& email) const;
+        void cleanup_expired_tokens();
+
+        // Настройки
+        void set_token_validity_period(std::chrono::hours hours);
+        void set_max_devices_per_email(size_t max_devices);
+
+        // Информационные методы
+        std::string get_current_device_id() const;
+        std::string get_current_email() const;
+        std::chrono::system_clock::time_point get_token_expiry() const;
+        size_t get_registered_devices_count() const;
+    };
 
     // Основной класс клиента аутентификации
     class AuthClient {
@@ -291,3 +370,5 @@ namespace ClientAuth {
         std::string CreateDeviceFingerprint();
     }
 }
+
+#endif // AUTH_H

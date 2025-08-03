@@ -2,6 +2,9 @@
 // Created by WhySkyDie on 21.07.2025.
 //
 
+#ifndef QUARANTINE_H
+#define QUARANTINE_H
+
 #pragma once
 
 #include <string>
@@ -163,6 +166,21 @@ namespace QuarantineEngine {
         QuarantineResult() : success(false), compression_ratio(0.0) {}
     };
 
+    struct QuarantineItem {
+        std::string file_id;
+        std::string original_path;
+        std::string quarantine_path;
+        std::chrono::system_clock::time_point quarantine_time;
+        std::string file_hash;
+        size_t file_size;
+        std::string reason;
+
+        QuarantineItem() = default;
+        QuarantineItem(const std::string& id, const std::string& orig_path,
+                       const std::string& quar_path, const std::string& hash,
+                       size_t size, const std::string& quarantine_reason);
+    };
+
     // Callback типы
     using ProgressCallback = std::function<void(const std::string& operation,
                                                std::size_t current, std::size_t total)>;
@@ -242,6 +260,38 @@ namespace QuarantineEngine {
     private:
         class Impl;
         std::unique_ptr<Impl> pImpl;
+    };
+
+    class QuarantineManager {
+    private:
+        std::filesystem::path quarantine_dir;
+        std::filesystem::path metadata_file;
+        std::unordered_map<std::string, QuarantineItem> quarantine_items;
+
+        // Вспомогательные методы
+        std::string generate_file_id() const;
+        bool load_metadata();
+        bool save_metadata();
+        std::string calculate_file_hash(const std::filesystem::path& path) const;
+
+    public:
+        explicit QuarantineManager(const std::filesystem::path& quarantine_directory = "./quarantine");
+        ~QuarantineManager();
+
+        // Основные методы с исправленными сигнатурами
+        bool quarantine_file(const std::filesystem::path& path);
+        bool restore_file(const std::string& file_id);
+        bool delete_file(const std::string& file_id);
+        std::vector<QuarantineItem> list_quarantine() const;
+
+        // Дополнительные методы
+        bool initialize();
+        void set_quarantine_reason(const std::string& reason);
+        size_t get_quarantine_count() const;
+        bool cleanup_quarantine(std::chrono::hours older_than = std::chrono::hours(24 * 30)); // 30 дней по умолчанию
+
+    private:
+        std::string current_reason = "Подозрительный файл";
     };
 
     // Криптографический движок
@@ -350,3 +400,4 @@ namespace QuarantineEngine {
     }
 }
 
+#endif // QUARANTINE_H

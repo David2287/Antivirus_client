@@ -525,6 +525,114 @@ namespace SignatureEngine {
 
     SignatureDatabase::~SignatureDatabase() = default;
 
+    bool SignatureDB::load_signature_db(const std::filesystem::path& path) {
+    try {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "Не удалось открыть файл: " << path << std::endl;
+            return false;
+        }
+
+        signatures.clear();
+        std::string line;
+
+        while (std::getline(file, line)) {
+            // Удаляем пробелы и переносы строк
+            line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
+
+            if (!line.empty()) {
+                signatures.insert(line);
+            }
+        }
+
+        db_path = path;
+        std::cout << "Загружено " << signatures.size() << " сигнатур из " << path << std::endl;
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Ошибка при загрузке базы сигнатур: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+    bool SignatureDB::is_hash_in_signatures(const std::string& hash) const {
+        if (hash.empty()) {
+            return false;
+        }
+
+        // Приводим хэш к нижнему регистру для унификации
+        std::string normalized_hash = hash;
+        std::transform(normalized_hash.begin(), normalized_hash.end(),
+                       normalized_hash.begin(), ::tolower);
+
+        return signatures.find(normalized_hash) != signatures.end();
+    }
+
+    void SignatureDB::update_signature_db_from_blob(const std::vector<uint8_t>& blob) {
+        if (blob.empty()) {
+            std::cerr << "Пустой блоб данных" << std::endl;
+            return;
+        }
+
+        try {
+            // Преобразуем блоб в строку
+            std::string data(blob.begin(), blob.end());
+            std::istringstream stream(data);
+            std::string line;
+
+            size_t added_count = 0;
+
+            while (std::getline(stream, line)) {
+                // Удаляем пробелы и переносы строк
+                line.erase(std::remove_if(line.begin(), line.end(), ::isspace), line.end());
+
+                if (!line.empty()) {
+                    // Приводим к нижнему регистру
+                    std::transform(line.begin(), line.end(), line.begin(), ::tolower);
+
+                    if (signatures.insert(line).second) {
+                        added_count++;
+                    }
+                }
+            }
+
+            std::cout << "Добавлено " << added_count << " новых сигнатур из блоба" << std::endl;
+            std::cout << "Общее количество сигнатур: " << signatures.size() << std::endl;
+
+        } catch (const std::exception& e) {
+            std::cerr << "Ошибка при обновлении базы из блоба: " << e.what() << std::endl;
+        }
+    }
+
+    void SignatureDB::clear() {
+        signatures.clear();
+    }
+
+    size_t SignatureDB::size() const {
+        return signatures.size();
+    }
+
+    bool SignatureDB::save_signature_db(const std::filesystem::path& path) const {
+        try {
+            std::ofstream file(path);
+            if (!file.is_open()) {
+                std::cerr << "Не удалось создать файл: " << path << std::endl;
+                return false;
+            }
+
+            for (const auto& signature : signatures) {
+                file << signature << '\n';
+            }
+
+            std::cout << "Сохранено " << signatures.size() << " сигнатур в " << path << std::endl;
+            return true;
+
+        } catch (const std::exception& e) {
+            std::cerr << "Ошибка при сохранении базы сигнатур: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
     bool SignatureDatabase::LoadDatabase(const std::filesystem::path& sigdb_path) {
         try {
             if (!std::filesystem::exists(sigdb_path)) {

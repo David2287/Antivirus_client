@@ -2,6 +2,9 @@
 // Created by WhySkyDie on 21.07.2025.
 //
 
+#ifndef LOGGER_H
+#define LOGGER_H
+
 #pragma once
 
 #include <string>
@@ -76,6 +79,13 @@ namespace LoggingSystem {
         CUSTOM
     };
 
+    enum class LogLevel {
+        INFO,
+        WARNING,
+        ERROR,
+        DEBUG
+    };
+
     // Запись лога
     struct LogEntry {
         std::chrono::system_clock::time_point timestamp;
@@ -102,6 +112,13 @@ namespace LoggingSystem {
         std::string operation;
         std::string error_code;
         std::string stack_trace;
+
+        std::chrono::system_clock::time_point timestamp;
+        LogLevel level;
+        std::string message;
+        std::string thread_id;
+
+        LogEntry(LogLevel lvl, const std::string& msg);
 
         LogEntry() : level(LogLevel::INFO), category(LogCategory::GENERAL),
                     priority(LogPriority::NORMAL), line_number(0) {
@@ -186,6 +203,51 @@ namespace LoggingSystem {
             total_bytes_written = 0;
             start_time = std::chrono::system_clock::now();
         }
+    };
+
+    class Logger {
+    private:
+        std::filesystem::path log_file_path;
+        std::filesystem::path error_log_path;
+        std::vector<LogEntry> log_buffer;
+        std::vector<LogEntry> error_buffer;
+        std::mutex log_mutex;
+        std::mutex error_mutex;
+
+        size_t max_buffer_size;
+        bool auto_flush;
+
+        // Вспомогательные методы
+        std::string format_timestamp(const std::chrono::system_clock::time_point& time) const;
+        std::string format_log_entry(const LogEntry& entry) const;
+        std::string get_current_thread_id() const;
+        bool write_buffer_to_file(const std::vector<LogEntry>& buffer, const std::filesystem::path& file_path);
+        void ensure_log_directory_exists();
+
+    public:
+        explicit Logger(const std::filesystem::path& log_directory = "./logs",
+                       size_t buffer_size = 100,
+                       bool enable_auto_flush = true);
+        ~Logger();
+
+        // Основные методы с исправленными сигнатурами
+        void log_event(const std::string& event_str);
+        void log_error(const std::string& error_str);
+        void flush_to_disk();
+
+        // Дополнительные методы
+        void log_info(const std::string& message);
+        void log_warning(const std::string& message);
+        void log_debug(const std::string& message);
+
+        void set_max_buffer_size(size_t size);
+        void set_auto_flush(bool enabled);
+        void clear_logs();
+        size_t get_buffer_size() const;
+        bool rotate_logs(size_t max_file_size_mb = 10);
+
+    private:
+        void check_and_flush_if_needed();
     };
 
     // Интерфейс для пользовательских назначений
@@ -446,3 +508,5 @@ namespace LoggingSystem {
         std::string EscapeXmlString(const std::string& str);
     }
 }
+
+#endif // LOGGER_H

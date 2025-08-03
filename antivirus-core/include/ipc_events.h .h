@@ -2,6 +2,9 @@
 // Created by WhySkyDie on 21.07.2025.
 //
 
+#ifndef IPC_EVENTS_H
+#define IPC_EVENTS_H
+
 #pragma once
 
 #include <string>
@@ -27,12 +30,15 @@ namespace IPCEvents {
         SCAN_STOP,
         SCAN_PAUSE,
         SCAN_RESUME,
+        SCAN_FILE,
+        SCAN_DIRECTORY,
 
         // Управление файлами
         QUARANTINE_FILE,
         RESTORE_FILE,
         DELETE_FILE,
         DELETE_PERMANENTLY,
+        DELETE_QUARANTINED,
 
         // Очистка
         CLEAR_QUARANTINE,
@@ -42,6 +48,7 @@ namespace IPCEvents {
 
         // Конфигурация
         UPDATE_SETTINGS,
+        UPDATE_SIGNATURES,
         RELOAD_CONFIG,
         SAVE_CONFIG,
 
@@ -64,6 +71,8 @@ namespace IPCEvents {
         RESTART_SERVICE,
         SHUTDOWN_SERVICE,
         CHECK_STATUS,
+        GET_SCAN_STATUS,
+        GET_QUARANTINE_LIST,
 
         // Пользовательские команды
         SHOW_ABOUT,
@@ -144,6 +153,18 @@ namespace IPCEvents {
             auto it = double_params.find(key);
             return it != double_params.end() ? it->second : default_value;
         }
+    };
+
+    struct CommandResponse {
+        CommandResult result;
+        std::string message;
+        json data;
+        std::string request_id;
+
+        CommandResponse(CommandResult res = CommandResult::ERROR,
+                       const std::string& msg = "",
+                       const json& response_data = json{},
+                       const std::string& req_id = "");
     };
 
     // Событие от UI
@@ -241,6 +262,81 @@ namespace IPCEvents {
     using ProgressCallback = std::function<void(const std::string& event_id, int percentage, const std::string& operation)>;
     using ErrorCallback = std::function<void(const std::string& error_message, const UIEvent& event)>;
     using StatusCallback = std::function<void(const std::string& status_message)>;
+
+    class IPCEventHandler {
+    private:
+        // Очереди команд и ответов
+        std::queue<json> command_queue;
+        std::queue<CommandResponse> response_queue;
+
+        // Синхронизация
+        std::mutex command_mutex;
+        std::mutex response_mutex;
+        std::condition_variable command_cv;
+        std::condition_variable response_cv;
+
+        // Поток обработки
+        std::thread processing_thread;
+        std::atomic<bool> running;
+
+        // Карта обработчиков команд
+        std::unordered_map<CommandType, std::function<CommandResponse(const json&)>> command_handlers;
+
+        // Зависимости (инжектируются извне)
+        class Scanner* scanner;
+        class QuarantineManager* quarantine_manager;
+        class SignatureDB* signature_db;
+        class AuthManager* auth_manager;
+        class Logger* logger;
+
+        // Вспомогательные методы
+        CommandType parse_command_type(const std::string& command) const;
+        std::string generate_request_id() const;
+        bool validate_command_structure(const json& command) const;
+        void register_command_handlers();
+        void process_commands();
+
+        // Обработчики конкретных команд
+        CommandResponse handle_scan_file(const json& params);
+        CommandResponse handle_scan_directory(const json& params);
+        CommandResponse handle_quarantine_file(const json& params);
+        CommandResponse handle_restore_file(const json& params);
+        CommandResponse handle_delete_quarantined(const json& params);
+        CommandResponse handle_update_signatures(const json& params);
+        CommandResponse handle_get_scan_status(const json& params);
+        CommandResponse handle_get_quarantine_list(const json& params);
+        CommandResponse handle_login(const json& params);
+        CommandResponse handle_register_device(const json& params);
+        CommandResponse handle_logout(const json& params);
+
+    public:
+        explicit IPCEventHandler();
+        ~IPCEventHandler();
+
+        // Основной метод для обработки команд
+        void handle_command(const json& command);
+
+        // Методы для установки зависимостей
+        void set_scanner(class Scanner* scanner_instance);
+        void set_quarantine_manager(class QuarantineManager* quarantine_instance);
+        void set_signature_db(class SignatureDB* signature_instance);
+        void set_auth_manager(class AuthManager* auth_instance);
+        void set_logger(class Logger* logger_instance);
+
+        // Методы для получения ответов
+        bool has_response() const;
+        CommandResponse get_response();
+        CommandResponse get_response_blocking(std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+        // Управление состоянием
+        void start();
+        void stop();
+        bool is_running() const;
+
+        // Информационные методы
+        size_t get_queue_size() const;
+        void clear_queues();
+    };
 
     // Основной класс обработчика событий IPC
     class IPCEventHandler {
@@ -401,3 +497,5 @@ namespace IPCEvents {
         EventResponse CreateProgressResponse(const std::string& event_id, int percentage, const std::string& operation);
     }
 }
+
+#endif // IPC_EVENTS_H

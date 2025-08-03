@@ -2,6 +2,35 @@
 // Created by WhySkyDie on 21.07.2025.
 //
 
+#ifndef SIGNATURES_H
+#define SIGNATURES_H
+
+#include <string>
+#include <unordered_set>
+#include <filesystem>
+#include <vector>
+
+class SignatureDB {
+private:
+    std::unordered_set<std::string> signatures;
+    std::filesystem::path db_path;
+
+public:
+    // Загрузить базу сигнатур из файла
+    bool load_signature_db(const std::filesystem::path& path);
+
+    // Проверить наличие хэша в базе сигнатур
+    bool is_hash_in_signatures(const std::string& hash) const;
+
+    // Обновить базу сигнатур из бинарного блоба
+    void update_signature_db_from_blob(const std::vector<uint8_t>& blob);
+
+    // Дополнительные методы
+    void clear();
+    size_t size() const;
+    bool save_signature_db(const std::filesystem::path& path) const;
+};
+
 > ParseFile(const std::filesystem::path& file_path);
         std::vector<Signature> ParseBuffer(const std::vector<uint8_t>& buffer);
         std::vector<Signature> ParseString(const std::string& data);
@@ -72,3 +101,5 @@
         std::string FormatTimestamp(const std::chrono::system_clock::time_point& time_point);
     }
 }
+
+#endif // SIGNATURES_H

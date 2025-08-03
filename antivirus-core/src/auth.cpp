@@ -24,6 +24,8 @@
     #include <sys/utsname.h>
 #endif
 
+using json = nlohmann::json;
+
 namespace ClientAuth {
 
     // Структура для обработки ответов CURL
@@ -36,6 +38,33 @@ namespace ClientAuth {
             return total_size;
         }
     };
+
+    AuthToken::AuthToken(const std::string& tk, const std::chrono::system_clock::time_point& expiry,
+                     const std::string& dev_id, const std::string& user_email)
+    : token(tk), expiry_time(expiry), device_id(dev_id), email(user_email), is_valid(true) {}
+
+    bool AuthToken::is_expired() const {
+        return std::chrono::system_clock::now() > expiry_time;
+    }
+
+    DeviceInfo::DeviceInfo(const std::string& dev_id, const std::string& user_email)
+        : device_id(dev_id), email(user_email),
+          registration_time(std::chrono::system_clock::now()),
+          last_login_time(std::chrono::system_clock::now()),
+          is_active(true) {}
+
+    AuthManager::AuthManager(const std::filesystem::path& state_file,
+                            std::chrono::hours token_validity, size_t max_devices)
+        : auth_state_file(state_file),
+          token_validity_period(token_validity),
+          max_devices_per_email(max_devices) {
+
+        load_auth_state();
+    }
+
+    AuthManager::~AuthManager() {
+        save_auth_state();
+    }
 
     // Реализация HttpClient::Impl
     class HttpClient::Impl {
@@ -1017,6 +1046,422 @@ namespace ClientAuth {
         } catch (const std::exception&) {
             return false;
         }
+    }
+
+    std::string AuthManager::generate_device_id() const {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 15);
+
+    std::stringstream ss;
+    ss << "DEV_";
+    ss << std::hex;
+    for (int i = 0; i < 16; ++i) {
+        ss << dis(gen);
+    }
+    return ss.str();
+}
+
+    std::string AuthManager::hash_token(const std::string& token) const {
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256_CTX sha256;
+        SHA256_Init(&sha256);
+        SHA256_Update(&sha256, token.c_str(), token.size());
+        SHA256_Final(hash, &sha256);
+
+        std::stringstream ss;
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+            ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+        }
+        return ss.str();
+    }
+
+    bool AuthManager::validate_email(const std::string& email) const {
+        const std::regex email_regex(R"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})");
+        return std::regex_match(email, email_regex);
+    }
+
+    bool AuthManager::validate_token_format(const std::string& token) const {
+        // Проверяем что токен не пустой и имеет минимальную длину
+        if (token.empty() || token.length() < 16) {
+            return false;
+        }
+
+        // Проверяем что токен содержит только допустимые символы
+        const std::regex token_regex(R"([a-zA-Z0-9._-]+)");
+        return std::regex_match(token, token_regex);
+    }
+
+    std::string AuthManager::encrypt_data(const std::string& data) const {
+        // Простое XOR шифрование для демонстрации
+        // В продакшене следует использовать более надежное шифрование
+        std::string encrypted = data;
+        const std::string key = "AUTH_ENCRYPTION_KEY_2024";
+
+        for (size_t i = 0; i < encrypted.size(); ++i) {
+            encrypted[i] ^= key[i % key.size()];
+        }
+
+        return encrypted;
+    }
+
+    std::string AuthManager::decrypt_data(const std::string& encrypted_data) const {
+        // Обратная операция XOR
+        return encrypt_data(encrypted_data);
+    }
+
+    bool AuthManager::login(const std::string& device_id, const std::string& token) {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        if (device_id.empty() || token.empty()) {
+            std::cerr << "Device ID или токен не могут быть пустыми" << std::endl;
+            return false;
+        }
+
+        if (!validate_token_format(token)) {
+            std::cerr << "Неверный формат токена" << std::endl;
+            return false;
+        }
+
+        // Проверяем что устройство зарегистрировано
+        auto device_it = registered_devices.find(device_id);
+        if (device_it == registered_devices.end()) {
+            std::cerr << "Устройство не зарегистрировано: " << device_id << std::endl;
+            return false;
+        }
+
+        if (!device_it->second.is_active) {
+            std::cerr << "Устройство деактивировано: " << device_id << std::endl;
+            return false;
+        }
+
+        // Создаем новый токен с временем истечения
+        auto expiry_time = std::chrono::system_clock::now() + token_validity_period;
+        current_token = AuthToken(hash_token(token), expiry_time, device_id, device_it->second.email);
+        current_device_id = device_id;
+
+        // Обновляем время последнего входа
+        device_it->second.last_login_time = std::chrono::system_clock::now();
+
+        save_auth_state();
+
+        std::cout << "Успешный вход для устройства: " << device_id << std::endl;
+        return true;
+    }
+
+    bool AuthManager::register_device(const std::string& email, const std::string& token) {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        if (email.empty() || token.empty()) {
+            std::cerr << "Email или токен не могут быть пустыми" << std::endl;
+            return false;
+        }
+
+        if (!validate_email(email)) {
+            std::cerr << "Неверный формат email: " << email << std::endl;
+            return false;
+        }
+
+        if (!validate_token_format(token)) {
+            std::cerr << "Неверный формат токена" << std::endl;
+            return false;
+        }
+
+        // Проверяем количество устройств для данного email
+        size_t device_count = 0;
+        for (const auto& pair : registered_devices) {
+            if (pair.second.email == email && pair.second.is_active) {
+                device_count++;
+            }
+        }
+
+        if (device_count >= max_devices_per_email) {
+            std::cerr << "Превышено максимальное количество устройств для email: " << email << std::endl;
+            return false;
+        }
+
+        // Генерируем новый device_id
+        std::string new_device_id = generate_device_id();
+
+        // Убеждаемся что device_id уникальный
+        while (registered_devices.find(new_device_id) != registered_devices.end()) {
+            new_device_id = generate_device_id();
+        }
+
+        // Регистрируем устройство
+        registered_devices[new_device_id] = DeviceInfo(new_device_id, email);
+
+        // Автоматически выполняем вход для нового устройства
+        auto expiry_time = std::chrono::system_clock::now() + token_validity_period;
+        current_token = AuthToken(hash_token(token), expiry_time, new_device_id, email);
+        current_device_id = new_device_id;
+
+        save_auth_state();
+
+        std::cout << "Устройство зарегистрировано с ID: " << new_device_id << std::endl;
+        return true;
+    }
+
+    bool AuthManager::is_authenticated() const {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        if (!current_token.is_valid) {
+            return false;
+        }
+
+        if (current_token.is_expired()) {
+            return false;
+        }
+
+        if (current_device_id.empty()) {
+            return false;
+        }
+
+        // Проверяем что устройство все еще зарегистрировано и активно
+        auto device_it = registered_devices.find(current_device_id);
+        if (device_it == registered_devices.end() || !device_it->second.is_active) {
+            return false;
+        }
+
+        return true;
+    }
+
+    void AuthManager::save_auth_state() {
+        try {
+            json j;
+
+            // Сохраняем текущее состояние аутентификации
+            if (current_token.is_valid) {
+                auto expiry_time_t = std::chrono::system_clock::to_time_t(current_token.expiry_time);
+                j["current_session"] = {
+                    {"device_id", current_device_id},
+                    {"token_hash", current_token.token},
+                    {"expiry_time", expiry_time_t},
+                    {"email", current_token.email},
+                    {"is_valid", current_token.is_valid}
+                };
+            }
+
+            // Сохраняем зарегистрированные устройства
+            j["registered_devices"] = json::array();
+            for (const auto& pair : registered_devices) {
+                const DeviceInfo& device = pair.second;
+
+                auto reg_time_t = std::chrono::system_clock::to_time_t(device.registration_time);
+                auto login_time_t = std::chrono::system_clock::to_time_t(device.last_login_time);
+
+                json device_json = {
+                    {"device_id", device.device_id},
+                    {"email", device.email},
+                    {"registration_time", reg_time_t},
+                    {"last_login_time", login_time_t},
+                    {"is_active", device.is_active}
+                };
+
+                j["registered_devices"].push_back(device_json);
+            }
+
+            // Сохраняем настройки
+            j["settings"] = {
+                {"token_validity_hours", token_validity_period.count()},
+                {"max_devices_per_email", max_devices_per_email}
+            };
+
+            std::string json_str = j.dump();
+            std::string encrypted_data = encrypt_data(json_str);
+
+            std::ofstream file(auth_state_file, std::ios::binary);
+            if (!file.is_open()) {
+                std::cerr << "Не удалось создать файл состояния аутентификации" << std::endl;
+                return;
+            }
+
+            file.write(encrypted_data.c_str(), encrypted_data.size());
+
+        } catch (const std::exception& e) {
+            std::cerr << "Ошибка сохранения состояния аутентификации: " << e.what() << std::endl;
+        }
+    }
+
+    void AuthManager::load_auth_state() {
+        try {
+            if (!std::filesystem::exists(auth_state_file)) {
+                return; // Файл не существует - нормально для первого запуска
+            }
+
+            std::ifstream file(auth_state_file, std::ios::binary);
+            if (!file.is_open()) {
+                std::cerr << "Не удалось открыть файл состояния аутентификации" << std::endl;
+                return;
+            }
+
+            std::string encrypted_data((std::istreambuf_iterator<char>(file)),
+                                       std::istreambuf_iterator<char>());
+
+            std::string json_str = decrypt_data(encrypted_data);
+            json j = json::parse(json_str);
+
+            // Загружаем текущую сессию
+            if (j.contains("current_session")) {
+                auto session = j["current_session"];
+
+                current_device_id = session["device_id"];
+                std::time_t expiry_time_t = session["expiry_time"];
+                auto expiry_time = std::chrono::system_clock::from_time_t(expiry_time_t);
+
+                current_token = AuthToken(
+                    session["token_hash"],
+                    expiry_time,
+                    session["device_id"],
+                    session["email"]
+                );
+                current_token.is_valid = session["is_valid"];
+            }
+
+            // Загружаем зарегистрированные устройства
+            if (j.contains("registered_devices")) {
+                registered_devices.clear();
+
+                for (const auto& device_json : j["registered_devices"]) {
+                    DeviceInfo device;
+                    device.device_id = device_json["device_id"];
+                    device.email = device_json["email"];
+                    device.is_active = device_json["is_active"];
+
+                    std::time_t reg_time_t = device_json["registration_time"];
+                    std::time_t login_time_t = device_json["last_login_time"];
+
+                    device.registration_time = std::chrono::system_clock::from_time_t(reg_time_t);
+                    device.last_login_time = std::chrono::system_clock::from_time_t(login_time_t);
+
+                    registered_devices[device.device_id] = device;
+                }
+            }
+
+            // Загружаем настройки
+            if (j.contains("settings")) {
+                auto settings = j["settings"];
+                token_validity_period = std::chrono::hours(settings["token_validity_hours"]);
+                max_devices_per_email = settings["max_devices_per_email"];
+            }
+
+            std::cout << "Состояние аутентификации загружено. Устройств: "
+                      << registered_devices.size() << std::endl;
+
+        } catch (const std::exception& e) {
+            std::cerr << "Ошибка загрузки состояния аутентификации: " << e.what() << std::endl;
+        }
+    }
+
+    bool AuthManager::logout() {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        current_token = AuthToken(); // Сброс токена
+        current_device_id.clear();
+
+        save_auth_state();
+
+        std::cout << "Выход выполнен успешно" << std::endl;
+        return true;
+    }
+
+    bool AuthManager::revoke_device(const std::string& device_id) {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        auto device_it = registered_devices.find(device_id);
+        if (device_it == registered_devices.end()) {
+            std::cerr << "Устройство не найдено: " << device_id << std::endl;
+            return false;
+        }
+
+        device_it->second.is_active = false;
+
+        // Если это текущее устройство, выполняем выход
+        if (current_device_id == device_id) {
+            current_token = AuthToken();
+            current_device_id.clear();
+        }
+
+        save_auth_state();
+
+        std::cout << "Устройство деактивировано: " << device_id << std::endl;
+        return true;
+    }
+
+    bool AuthManager::refresh_token(const std::string& new_token) {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        if (!is_authenticated()) {
+            std::cerr << "Пользователь не аутентифицирован" << std::endl;
+            return false;
+        }
+
+        if (!validate_token_format(new_token)) {
+            std::cerr << "Неверный формат нового токена" << std::endl;
+            return false;
+        }
+
+        // Обновляем токен и продлеваем срок действия
+        current_token.token = hash_token(new_token);
+        current_token.expiry_time = std::chrono::system_clock::now() + token_validity_period;
+
+        save_auth_state();
+
+        std::cout << "Токен обновлен успешно" << std::endl;
+        return true;
+    }
+
+    std::vector<DeviceInfo> AuthManager::get_registered_devices(const std::string& email) const {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        std::vector<DeviceInfo> devices;
+        for (const auto& pair : registered_devices) {
+            if (pair.second.email == email) {
+                devices.push_back(pair.second);
+            }
+        }
+
+        return devices;
+    }
+
+    void AuthManager::cleanup_expired_tokens() {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+
+        // Очищаем текущий токен если истек
+        if (current_token.is_valid && current_token.is_expired()) {
+            current_token = AuthToken();
+            current_device_id.clear();
+        }
+
+        save_auth_state();
+    }
+
+    void AuthManager::set_token_validity_period(std::chrono::hours hours) {
+        token_validity_period = hours;
+    }
+
+    void AuthManager::set_max_devices_per_email(size_t max_devices) {
+        max_devices_per_email = max_devices;
+    }
+
+    std::string AuthManager::get_current_device_id() const {
+        return current_device_id;
+    }
+
+    std::string AuthManager::get_current_email() const {
+        if (is_authenticated()) {
+            return current_token.email;
+        }
+        return "";
+    }
+
+    std::chrono::system_clock::time_point AuthManager::get_token_expiry() const {
+        return current_token.expiry_time;
+    }
+
+    size_t AuthManager::get_registered_devices_count() const {
+        std::lock_guard<std::mutex> lock(auth_mutex);
+        return registered_devices.size();
     }
 
     // Утилитарные функции

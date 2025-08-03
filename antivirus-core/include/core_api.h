@@ -2,6 +2,9 @@
 // Created by WhySkyDie on 21.07.2025.
 //
 
+#ifndef CORE_API_H
+#define CORE_API_H
+
 #pragma once
 
 #include <string>
@@ -37,6 +40,20 @@ struct ConfigData {
     char* log_level;
     bool auto_start;
     int port;
+};
+
+// Структуры данных
+struct QuarantineItem {
+    int file_id;
+    std::string file_path;
+    std::string threat_name;
+    std::string quarantine_date;
+};
+
+struct AuthResult {
+    bool success;
+    std::string message;
+    std::string session_token;
 };
 
 // Callback типы
@@ -77,14 +94,36 @@ CORE_API const char* get_build_info();
 
 // Windows Service специфичные функции
 #ifdef _WIN32
-CORE_API bool install_service();
-CORE_API bool uninstall_service();
-CORE_API bool start_service();
-CORE_API bool stop_service();
-CORE_API ApiResult* get_service_status();
+    CORE_API bool install_service();
+    CORE_API bool uninstall_service();
+    CORE_API bool start_service();
+    CORE_API bool stop_service();
+    CORE_API ApiResult* get_service_status();
 #endif
 
 } // extern "C"
+
+// Основные функции API
+class CoreAPI {
+public:
+    // Сканирование файлов
+    static bool scan_path(const char* path);
+
+    // Управление карантином
+    static std::vector<QuarantineItem> get_quarantine_list();
+    static bool restore_from_quarantine(int file_id);
+    bool moveBackToOriginal(const std::string& currentPath);
+
+    // Аутентификация
+    static AuthResult auth_login(const char* device_id, const char* token);
+    static AuthResult auth_register(const char* email, const char* token);
+
+private:
+    // Вспомогательные функции
+    static bool validate_path(const char* path);
+    static bool validate_email(const char* email);
+    static bool validate_token(const char* token);
+};
 
 // C++ интерфейс для более удобного использования
 namespace CoreAPI {
@@ -161,3 +200,5 @@ namespace CoreAPI {
         std::unique_ptr<Impl> pImpl;
     };
 }
+
+#endif // CORE_API_H

@@ -40,6 +40,8 @@ namespace FileScanner {
         std::vector<std::string> matched_signatures;
         std::string mime_type;
         double scan_time_ms;
+        std::string file_path;
+        bool is_infected;
 
         ScanResult() : file_size(0), is_suspicious(false), scan_time_ms(0.0) {}
     };
@@ -181,6 +183,10 @@ namespace FileScanner {
 
         std::vector<uint8_t> HexStringToBytes(const std::string& hex_str);
         std::string BytesToHexString(const std::vector<uint8_t>& bytes);
+
+        std::vector<ScanResult> scan_directory(const std::string& path);
+        bool is_file_infected(const std::string& file_path);
+        std::string hash_file(const std::string& path, const std::string& algorithm = "MD5");
 
         bool IsValidPath(const std::filesystem::path& path);
         bool ShouldSkipFile(const std::filesystem::path& file_path, const ScanConfig& config);
